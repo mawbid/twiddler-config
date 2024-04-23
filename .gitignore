@@ -1,0 +1,7 @@
+*.pyc
+.idea
+.vscode
+conv
+foo
+tmp
+twiddler.cfg

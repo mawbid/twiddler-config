@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"
+
+gcc -g -fdiagnostics-color=always -Wall conv.cpp -o conv
