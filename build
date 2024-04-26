@@ -2,4 +2,4 @@
 
 cd "$(dirname "$0")"
 
-gcc -g -fdiagnostics-color=always -Wall conv.cpp -o conv
+gcc -Og -g -fdiagnostics-color=always -Wall conv.cpp -o conv
