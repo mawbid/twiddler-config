@@ -54,6 +54,8 @@ struct Arena
 
 #define MAIN_ARENA_BASE (void *)0x1000000
 
+#define MAX_CHORD_COUNT 1020
+
 inline void
 initArena(Arena *arena, size_t size, void *addressHint = 0)
 {
@@ -91,8 +93,8 @@ struct ReadFileResult
 {
     enum Outcome
     {
-        Invalid,
-        OK,
+        Uninitialized,
+        Success,
         Unreadable,
         Partial
     };
@@ -123,7 +125,7 @@ readFile(Arena *arena, const char *fileName)
         else
         {
             takeBytes(arena, length);
-            result = {ReadFileResult::OK, fileBytes, length};
+            result = {ReadFileResult::Success, fileBytes, length};
         }
     }
     if (fp)
@@ -133,23 +135,38 @@ readFile(Arena *arena, const char *fileName)
     return result;
 }
 
-void parseTwiddlerConfigV5Bytes(u8 *fileBytes, u64 length, char *fileName)
+struct TwiddlerConfig
 {
+    enum Outcome
+    {
+        Uninitialized,
+        Success,
+        IncompleteHeader,
+        ChordCountTooHigh,
+    };
+    Outcome outcome;
+    Header *header;
+    ChordTableEntry *chordTable;
+};
+
+TwiddlerConfig parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length, char *fileName)
+{
+    TwiddlerConfig result = {};
     if (length < sizeof(Header))
     {
-        ERROR("File %s is too short\n", fileName);
+        result = {TwiddlerConfig::Outcome::IncompleteHeader};
     }
     else
     {
-        Header *header = (Header *)fileBytes;
+        Header *header = (Header *)sourceBytes;
 
-        if (header->chord_count > 1020)
+        if (header->chord_count > MAX_CHORD_COUNT)
         {
-            ERROR("Too many chords\n");
+            result = {TwiddlerConfig::Outcome::ChordCountTooHigh};
         }
         else
         {
-            ChordTableEntry *chordTable = (ChordTableEntry *)(fileBytes + sizeof(Header));
+            ChordTableEntry *chordTable = (ChordTableEntry *)(sourceBytes + sizeof(Header));
             for (u32 chordIndex = 0;
                  chordIndex < header->chord_count;
                  ++chordIndex)
@@ -159,20 +176,22 @@ void parseTwiddlerConfigV5Bytes(u8 *fileBytes, u64 length, char *fileName)
             }
         }
     }
+    return result;
 }
 
 int main(int argc, char **argv)
 {
     Arena arena;
     initArena(&arena, MegaBytes(1), MAIN_ARENA_BASE);
+    char *fileName = argv[1];
 
-    ReadFileResult confFile = readFile(&arena, argv[1]);
-    if (confFile.outcome != ReadFileResult::OK)
+    ReadFileResult confFile = readFile(&arena, fileName);
+    if (confFile.outcome != ReadFileResult::Success)
     {
-        ERROR("Could not read file \"%s\"\n", argv[1])
+        ERROR("Could not read file \"%s\"\n", fileName)
     }
     else
     {
-        parseTwiddlerConfigV5Bytes(confFile.data, confFile.length, argv[1]);
+        parseTwiddlerConfigV5Bytes(&arena, confFile.data, confFile.length, fileName);
     }
 }
