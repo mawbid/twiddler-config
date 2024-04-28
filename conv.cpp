@@ -83,26 +83,46 @@ void takeBytes(Arena *arena, size_t bytes)
     arena->next = (void *)((u8 *)arena->next + bytes);
 }
 
+#define ERROR(...)                \
+    fprintf(stderr, __VA_ARGS__); \
+    exit(1);
+
 int main(int argc, char **argv)
 {
     FILE *fp = fopen(argv[1], "r");
     Arena arena;
     initArena(&arena, MegaBytes(1), MAIN_ARENA_BASE);
 
-    if (fp)
+    if (!fp)
+    {
+        ERROR("Could not open file %s\n", argv[1]);
+    }
+    else
     {
         u8 *fileBytes = (u8 *)arena.next;
 
         u64 length = fread(fileBytes, sizeof(*fileBytes), bytesAvailable(&arena), fp);
         takeBytes(&arena, length);
 
-        if (feof(fp))
+        if (!feof(fp))
         {
-            if (length >= sizeof(Header))
+            ERROR("Could not read file %s\n", argv[1]);
+        }
+        else
+        {
+            if (length < sizeof(Header))
+            {
+                ERROR("File %s is too short\n", argv[1]);
+            }
+            else
             {
                 Header *header = (Header *)fileBytes;
 
-                if (header->chord_count <= 1020)
+                if (header->chord_count > 1020)
+                {
+                    ERROR("Too many chords\n");
+                }
+                else
                 {
                     ChordTableEntry *chordTable = (ChordTableEntry *)(fileBytes + sizeof(Header));
                     for (u32 chordIndex = 0;
@@ -113,27 +133,7 @@ int main(int argc, char **argv)
                         printf("chord buttons=%04x code=0x%02x mod=%02x\n", chord->buttons, chord->hidCode, chord->hidModifiers);
                     }
                 }
-                else
-                {
-                    fprintf(stderr, "Too many chords\n");
-                    exit(1);
-                }
-            }
-            else
-            {
-                fprintf(stderr, "File %s is too short'n", argv[1]);
-                exit(1);
             }
         }
-        else
-        {
-            fprintf(stderr, "Could not read file %s\n", argv[1]);
-            exit(1);
-        }
-    }
-    else
-    {
-        fprintf(stderr, "Could not open file %s\n", argv[1]);
-        exit(1);
     }
 }
