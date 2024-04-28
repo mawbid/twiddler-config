@@ -87,53 +87,88 @@ void takeBytes(Arena *arena, size_t bytes)
     fprintf(stderr, __VA_ARGS__); \
     exit(1);
 
-int main(int argc, char **argv)
+struct ReadFileResult
 {
-    FILE *fp = fopen(argv[1], "r");
-    Arena arena;
-    initArena(&arena, MegaBytes(1), MAIN_ARENA_BASE);
+    enum Outcome
+    {
+        Invalid,
+        OK,
+        Unreadable,
+        Partial
+    };
+    Outcome outcome;
+    u8 *data;
+    u64 length;
+};
 
+ReadFileResult
+readFile(Arena *arena, const char *fileName)
+{
+    ReadFileResult result = {};
+
+    FILE *fp = fopen(fileName, "r");
     if (!fp)
     {
-        ERROR("Could not open file %s\n", argv[1]);
+        result = {ReadFileResult::Unreadable};
     }
     else
     {
-        u8 *fileBytes = (u8 *)arena.next;
-
-        u64 length = fread(fileBytes, sizeof(*fileBytes), bytesAvailable(&arena), fp);
-        takeBytes(&arena, length);
+        u8 *fileBytes = (u8 *)arena->next;
+        u64 length = fread(fileBytes, sizeof(*fileBytes), bytesAvailable(arena), fp);
+        takeBytes(arena, length);
 
         if (!feof(fp))
         {
-            ERROR("Could not read file %s\n", argv[1]);
+            result = {ReadFileResult::Partial, fileBytes, length};
         }
         else
         {
-            if (length < sizeof(Header))
-            {
-                ERROR("File %s is too short\n", argv[1]);
-            }
-            else
-            {
-                Header *header = (Header *)fileBytes;
+            result = {ReadFileResult::OK, fileBytes, length};
+        }
+    }
+    return result;
+}
 
-                if (header->chord_count > 1020)
-                {
-                    ERROR("Too many chords\n");
-                }
-                else
-                {
-                    ChordTableEntry *chordTable = (ChordTableEntry *)(fileBytes + sizeof(Header));
-                    for (u32 chordIndex = 0;
-                         chordIndex < header->chord_count;
-                         ++chordIndex)
-                    {
-                        ChordTableEntry *chord = chordTable + chordIndex;
-                        printf("chord buttons=%04x code=0x%02x mod=%02x\n", chord->buttons, chord->hidCode, chord->hidModifiers);
-                    }
-                }
+void parseTwiddlerConfigV5Bytes(u8 *fileBytes, u64 length, char *fileName)
+{
+    if (length < sizeof(Header))
+    {
+        ERROR("File %s is too short\n", fileName);
+    }
+    else
+    {
+        Header *header = (Header *)fileBytes;
+
+        if (header->chord_count > 1020)
+        {
+            ERROR("Too many chords\n");
+        }
+        else
+        {
+            ChordTableEntry *chordTable = (ChordTableEntry *)(fileBytes + sizeof(Header));
+            for (u32 chordIndex = 0;
+                 chordIndex < header->chord_count;
+                 ++chordIndex)
+            {
+                ChordTableEntry *chord = chordTable + chordIndex;
+                printf("chord buttons=%04x code=0x%02x mod=%02x\n", chord->buttons, chord->hidCode, chord->hidModifiers);
             }
         }
+    }
+}
+
+int main(int argc, char **argv)
+{
+    Arena arena;
+    initArena(&arena, MegaBytes(1), MAIN_ARENA_BASE);
+
+    ReadFileResult confFile = readFile(&arena, argv[1]);
+    if (confFile.outcome != ReadFileResult::OK)
+    {
+        ERROR("Could not read file \"%s\"\n", argv[1])
+    }
+    else
+    {
+        parseTwiddlerConfigV5Bytes(confFile.data, confFile.length, argv[1]);
     }
 }
