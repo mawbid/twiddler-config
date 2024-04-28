@@ -2,36 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <sys/mman.h>
-
-enum MouseClick
-{
-    right = 0,
-    left = 1
-};
-
-enum Button
-{
-    num = 0,
-    alt = 4,
-    ctrl = 8,
-    shift = 12,
-
-    one_right = 1,
-    one_middle = 2,
-    one_left = 3,
-
-    two_right = 5,
-    two_middle = 6,
-    two_left = 7,
-
-    three_right = 9,
-    three_middle = 10,
-    three_left = 11,
-
-    four_right = 13,
-    four_middle = 14,
-    four_left = 15,
-};
+#include "codes.h"
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -57,6 +28,13 @@ struct Header
     u8 key_repeat_delay;
     u8 options_b;
     u8 options_c;
+};
+
+struct ChordTableEntry
+{
+    u16 buttons;
+    u8 hidModifiers;
+    u8 hidCode;
 };
 
 #pragma pack(pop)
@@ -113,15 +91,39 @@ int main(int argc, char **argv)
 
     if (fp)
     {
-        char *configurationBuffer = (char *)arena.next;
+        u8 *fileBytes = (u8 *)arena.next;
 
-        u64 length = fread(configurationBuffer, sizeof(*configurationBuffer), bytesAvailable(&arena), fp);
+        u64 length = fread(fileBytes, sizeof(*fileBytes), bytesAvailable(&arena), fp);
         takeBytes(&arena, length);
 
         if (feof(fp))
         {
-            Header *header = (Header *)configurationBuffer;
-            printf("yay! %lu\n", length);
+            if (length >= sizeof(Header))
+            {
+                Header *header = (Header *)fileBytes;
+
+                if (header->chord_count <= 1020)
+                {
+                    ChordTableEntry *chordTable = (ChordTableEntry *)(fileBytes + sizeof(Header));
+                    for (u32 chordIndex = 0;
+                         chordIndex < header->chord_count;
+                         ++chordIndex)
+                    {
+                        ChordTableEntry *chord = chordTable + chordIndex;
+                        printf("chord buttons=%04x code=0x%02x mod=%02x\n", chord->buttons, chord->hidCode, chord->hidModifiers);
+                    }
+                }
+                else
+                {
+                    fprintf(stderr, "Too many chords\n");
+                    exit(1);
+                }
+            }
+            else
+            {
+                fprintf(stderr, "File %s is too short'n", argv[1]);
+                exit(1);
+            }
         }
         else
         {
@@ -134,6 +136,4 @@ int main(int argc, char **argv)
         fprintf(stderr, "Could not open file %s\n", argv[1]);
         exit(1);
     }
-    printf("hello\n");
-    return 0;
 }
