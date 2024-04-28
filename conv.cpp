@@ -115,16 +115,20 @@ readFile(Arena *arena, const char *fileName)
     {
         u8 *fileBytes = (u8 *)arena->next;
         u64 length = fread(fileBytes, sizeof(*fileBytes), bytesAvailable(arena), fp);
-        takeBytes(arena, length);
 
         if (!feof(fp))
         {
-            result = {ReadFileResult::Partial, fileBytes, length};
+            result = {ReadFileResult::Partial, 0, 0};
         }
         else
         {
+            takeBytes(arena, length);
             result = {ReadFileResult::OK, fileBytes, length};
         }
+    }
+    if (fp)
+    {
+        fclose(fp);
     }
     return result;
 }
