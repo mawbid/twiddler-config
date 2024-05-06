@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <cassert>
+
 #include "codes.h"
 
 typedef uint8_t u8;
@@ -12,6 +14,20 @@ typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
+
+inline u32 readLEu32(u8 *bytes)
+{
+    return bytes[0] << 0 |
+           bytes[1] << 8 |
+           bytes[2] << 16 |
+           bytes[3] << 24;
+}
+
+inline u32 readLEu16(u8 *bytes)
+{
+    return bytes[0] << 0 |
+           bytes[1] << 8;
+}
 
 #pragma pack(push, 1)
 
@@ -86,15 +102,27 @@ initArena(Arena *arena, size_t size, void *addressHint = 0)
     }
 }
 
-size_t bytesAvailable(Arena *arena)
+size_t
+bytesAvailable(Arena *arena)
 {
     size_t used = (u8 *)(arena->next) - (u8 *)(arena->base);
     return arena->size - used;
 }
 
-void takeBytes(Arena *arena, size_t bytes)
+void *
+takeBytes(Arena *arena, size_t bytes)
 {
-    arena->next = (void *)((u8 *)arena->next + bytes);
+    void *result;
+    if (bytes > bytesAvailable(arena))
+    {
+        assert(!"Arena exhausted");
+    }
+    else
+    {
+        result = arena->next;
+        arena->next = (void *)((u8 *)arena->next + bytes);
+    }
+    return result;
 }
 
 #define ERROR(...)                \
@@ -156,7 +184,7 @@ struct TwiddlerConfig
         IncompleteHeader,
         ChordCountTooHigh,
         TooManyStrings,
-        StringHasInconsistentLength, // declared length would reach beyond end of file
+        DeclaredStringLengthOverrunsBuffer,
     };
     Outcome outcome;
     Header header;
@@ -164,28 +192,34 @@ struct TwiddlerConfig
     u32 StringLocationsTable[MAX_STRING_COUNT];
 };
 
-TwiddlerConfig parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length, char *fileName)
+TwiddlerConfig *
+parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length, char *fileName)
 {
-    TwiddlerConfig result = {};
+    TwiddlerConfig *result = (TwiddlerConfig *)takeBytes(arena, sizeof(TwiddlerConfig));
     if (length < sizeof(Header))
     {
-        result = {TwiddlerConfig::Outcome::IncompleteHeader};
+        result->outcome = TwiddlerConfig::Outcome::IncompleteHeader;
     }
     else
     {
-        Header *header = (Header *)sourceBytes;
+        Header *rawHeader = (Header *)sourceBytes;
+        result->header = *rawHeader;
+        result->header.chord_count = readLEu16((u8 *)&rawHeader->chord_count);
+        result->header.sleep_timeout = readLEu16((u8 *)&rawHeader->sleep_timeout);
 
-        if (header->chord_count > MAX_CHORD_COUNT)
+        if (result->header.chord_count > MAX_CHORD_COUNT)
         {
-            result = {TwiddlerConfig::Outcome::ChordCountTooHigh};
+            result->outcome = TwiddlerConfig::Outcome::ChordCountTooHigh;
         }
         else
         {
-            u32 stringCount = (header->mouse_left_action == 0xff) + (header->mouse_middle_action == 0xff) + (header->mouse_right_action == 0xff);
+            u32 stringCount = ((result->header.mouse_left_action == 0xff) +
+                               (result->header.mouse_middle_action == 0xff) +
+                               (result->header.mouse_right_action == 0xff));
 
             ChordTableEntry *chordTable = (ChordTableEntry *)(sourceBytes + sizeof(Header));
             for (u32 chordIndex = 0;
-                 chordIndex < header->chord_count;
+                 chordIndex < result->header.chord_count;
                  ++chordIndex)
             {
                 ChordTableEntry *chord = chordTable + chordIndex;
@@ -198,11 +232,11 @@ TwiddlerConfig parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 len
 
             if (stringCount > MAX_STRING_COUNT)
             {
-                result = {TwiddlerConfig::Outcome::TooManyStrings};
+                result->outcome = TwiddlerConfig::Outcome::TooManyStrings;
             }
             else
             {
-                u32 *stringLocationTable = (u32 *)(chordTable + header->chord_count);
+                u32 *stringLocationTable = (u32 *)(chordTable + result->header.chord_count);
                 // StringContentsTableEntry *stringContentsTable = (StringContentsTableEntry *)(stringLocationTable + stringCount);
 
                 for (u32 stringIndex = 0;
@@ -212,7 +246,7 @@ TwiddlerConfig parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 len
                     StringContentsTableEntry *stringEntry = (StringContentsTableEntry *)(sourceBytes + stringLocationTable[stringIndex]);
                     if ((u8 *)stringEntry + stringEntry->length > sourceBytes + length)
                     {
-                        result = {TwiddlerConfig::Outcome::StringHasInconsistentLength};
+                        result->outcome = TwiddlerConfig::Outcome::DeclaredStringLengthOverrunsBuffer;
                         break;
                     }
                     else
