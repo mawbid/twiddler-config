@@ -215,8 +215,9 @@ struct TwiddlerConfig
 };
 
 TwiddlerConfig
-parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length, char *fileName)
+parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
 {
+    void *memory = arena->next;
     TwiddlerConfig result = {};
     if (length < sizeof(Header))
     {
@@ -318,6 +319,10 @@ parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length, char *file
             }
         }
     }
+    if (result.outcome != TwiddlerConfig::Success)
+    {
+        arena->next = memory;
+    }
     return result;
 }
 
@@ -334,7 +339,7 @@ int main(int argc, char **argv)
     }
     else
     {
-        TwiddlerConfig config = parseTwiddlerConfigV5Bytes(&arena, confFile.data, confFile.length, fileName);
+        TwiddlerConfig config = parseTwiddlerConfigV5Bytes(&arena, confFile.data, confFile.length);
         if (config.outcome != TwiddlerConfig::Success)
         {
             ERROR("Could not parse file \"%s\"\n", fileName)
