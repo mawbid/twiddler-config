@@ -197,6 +197,13 @@ struct Chord
 
 struct TwiddlerConfig
 {
+    u32 stringCount;
+    Header *header;
+    Chord *chords;
+};
+
+struct ParseTwiddlerConfigV5Result
+{
     enum Outcome
     {
         Uninitialized,
@@ -209,49 +216,47 @@ struct TwiddlerConfig
         StringTooLong,
     };
     Outcome outcome;
-    u32 stringCount;
-    Header *header;
-    Chord *chords;
+    TwiddlerConfig config;
 };
 
-TwiddlerConfig
-parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
+ParseTwiddlerConfigV5Result
+parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
 {
     void *memory = arena->next;
-    TwiddlerConfig result = {};
+    ParseTwiddlerConfigV5Result result = {};
     if (length < sizeof(Header))
     {
-        result = {TwiddlerConfig::IncompleteHeader};
+        result = {ParseTwiddlerConfigV5Result::IncompleteHeader};
     }
     else
     {
         Header *rawHeader = (Header *)sourceBytes;
-
-        result.header = (Header *)requestBytes(arena, sizeof(Header));
-        result.chords = (Chord *)requestBytes(arena, sizeof(Chord) * MAX_CHORD_COUNT);
-        if (!result.header || !result.chords)
+        TwiddlerConfig &config = result.config;
+        config.header = (Header *)requestBytes(arena, sizeof(Header));
+        config.chords = (Chord *)requestBytes(arena, sizeof(Chord) * MAX_CHORD_COUNT);
+        if (!config.header || !config.chords)
         {
-            result = {TwiddlerConfig::ArenaFull};
+            result = {ParseTwiddlerConfigV5Result::ArenaFull};
         }
         else
         {
-            *result.header = *rawHeader;
-            result.header->chord_count = readLEu16((u8 *)&rawHeader->chord_count);
-            result.header->sleep_timeout = readLEu16((u8 *)&rawHeader->sleep_timeout);
+            *config.header = *rawHeader;
+            config.header->chord_count = readLEu16((u8 *)&rawHeader->chord_count);
+            config.header->sleep_timeout = readLEu16((u8 *)&rawHeader->sleep_timeout);
 
-            if (result.header->chord_count > MAX_CHORD_COUNT)
+            if (config.header->chord_count > MAX_CHORD_COUNT)
             {
-                result = {TwiddlerConfig::ChordCountTooHigh};
+                result = {ParseTwiddlerConfigV5Result::ChordCountTooHigh};
             }
             else
             {
-                u32 stringCount = ((result.header->mouse_left_action == 0xff) +
-                                   (result.header->mouse_middle_action == 0xff) +
-                                   (result.header->mouse_right_action == 0xff));
+                u32 stringCount = ((config.header->mouse_left_action == 0xff) +
+                                   (config.header->mouse_middle_action == 0xff) +
+                                   (config.header->mouse_right_action == 0xff));
 
                 ChordTableEntry *chordTable = (ChordTableEntry *)(sourceBytes + sizeof(Header));
                 for (u32 chordIndex = 0;
-                     chordIndex < result.header->chord_count;
+                     chordIndex < config.header->chord_count;
                      ++chordIndex)
                 {
                     ChordTableEntry *chord = chordTable + chordIndex;
@@ -263,11 +268,11 @@ parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
 
                 if (stringCount > MAX_STRING_COUNT)
                 {
-                    result = {TwiddlerConfig::TooManyStrings};
+                    result = {ParseTwiddlerConfigV5Result::TooManyStrings};
                 }
                 else
                 {
-                    u32 *stringLocationTable = (u32 *)(chordTable + result.header->chord_count);
+                    u32 *stringLocationTable = (u32 *)(chordTable + config.header->chord_count);
 
                     for (u32 stringIndex = 0;
                          stringIndex < stringCount;
@@ -276,22 +281,22 @@ parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
                         StringTableEntry *stringEntry = (StringTableEntry *)(sourceBytes + stringLocationTable[stringIndex]);
                         if ((u8 *)stringEntry + stringEntry->length > sourceBytes + length)
                         {
-                            result = {TwiddlerConfig::DeclaredStringLengthOverrunsBuffer};
+                            result = {ParseTwiddlerConfigV5Result::DeclaredStringLengthOverrunsBuffer};
                             break;
                         }
                         else if (stringEntry->length > MAX_STRING_LENGTH)
                         {
-                            result = {TwiddlerConfig::StringTooLong};
+                            result = {ParseTwiddlerConfigV5Result::StringTooLong};
                             break;
                         }
                         else
                         {
                             for (u32 chordIndex = 0;
-                                 chordIndex < result.header->chord_count;
+                                 chordIndex < config.header->chord_count;
                                  ++chordIndex)
                             {
                                 ChordTableEntry *chordTableEntry = chordTable + chordIndex;
-                                Chord *chord = result.chords + chordIndex;
+                                Chord *chord = config.chords + chordIndex;
                                 chord->buttons = chordTableEntry->buttons;
                                 if (chordTableEntry->hid.modifiers == 0xff)
                                 {
@@ -311,7 +316,7 @@ parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
                                     *(chord->codes) = chordTableEntry->hid;
                                 }
 
-                                result.outcome = TwiddlerConfig::Success;
+                                result.outcome = ParseTwiddlerConfigV5Result::Success;
                             }
                         }
                     }
@@ -319,12 +324,31 @@ parseTwiddlerConfigV5Bytes(Arena *arena, u8 *sourceBytes, u64 length)
             }
         }
     }
-    if (result.outcome != TwiddlerConfig::Success)
+    if (result.outcome != ParseTwiddlerConfigV5Result::Success)
     {
         arena->next = memory;
     }
     return result;
 }
+
+#if 0
+struct UnparseTwiddlerConfigV5Result
+{
+    enum Outcome
+    {
+        Uninitialzed,
+        ArenaFull,
+        Success,
+    };
+    Outcome outcome;
+    u8 *bytes;
+    u64 length;
+};
+
+UnparseTwiddlerConfigV5Result unparseTwiddlerConfigV5Result(Arena *arena, TwiddlerConfig *config)
+{
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -339,18 +363,18 @@ int main(int argc, char **argv)
     }
     else
     {
-        TwiddlerConfig config = parseTwiddlerConfigV5Bytes(&arena, confFile.data, confFile.length);
-        if (config.outcome != TwiddlerConfig::Success)
+        ParseTwiddlerConfigV5Result parseResult = parseTwiddlerConfigV5(&arena, confFile.data, confFile.length);
+        if (parseResult.outcome != ParseTwiddlerConfigV5Result::Success)
         {
             ERROR("Could not parse file \"%s\"\n", fileName)
         }
         else
         {
             for (u32 chordIndex = 0;
-                 chordIndex < config.header->chord_count;
+                 chordIndex < parseResult.config.header->chord_count;
                  ++chordIndex)
             {
-                Chord *chord = config.chords + chordIndex;
+                Chord *chord = parseResult.config.chords + chordIndex;
                 printf("buttons=0x%04x, length=%d\n", chord->buttons, chord->codeCount);
                 for (u32 codeIndex = 0;
                      codeIndex < chord->codeCount;
@@ -360,6 +384,7 @@ int main(int argc, char **argv)
                     printf("  (%d)  code=0x%02x, mod=0x%02x\n", codeIndex, code->code, code->modifiers);
                 }
             }
+            // UnparseTwiddlerConfigV5Result configOut = unparseTwiddlerConfigV5(&arena, parseResult.config);
         }
     }
 }
