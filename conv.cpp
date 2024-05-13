@@ -14,6 +14,7 @@ typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
+typedef u32 b32;
 
 inline u32 readLEu32(u8 *bytes)
 {
@@ -27,6 +28,26 @@ inline u32 readLEu16(u8 *bytes)
 {
     return bytes[0] << 0 |
            bytes[1] << 8;
+}
+
+inline void writeLEu32(u8 *bytes, u32 value)
+{
+    *(bytes++) = value & 0xff;
+    value >>= 8;
+    *(bytes++) = value & 0xff;
+    value >>= 8;
+    *(bytes++) = value & 0xff;
+    value >>= 8;
+    *(bytes++) = value & 0xff;
+    value >>= 8;
+}
+
+inline void writeLEu16(u8 *bytes, u16 value)
+{
+    *(bytes++) = value & 0xff;
+    value >>= 8;
+    *(bytes++) = value & 0xff;
+    value >>= 8;
 }
 
 #pragma pack(push, 1)
@@ -60,7 +81,7 @@ struct ChordTableEntry
 
 struct StringTableEntry
 {
-    u16 length;
+    u16 size;
     HidPair elements[];
 };
 
@@ -138,6 +159,18 @@ requestBytes(Arena *arena, size_t bytes)
     return result;
 }
 
+u32 min(u32 a, u32 b)
+{
+    u32 result = (a <= b) ? a : b;
+    return result;
+}
+
+u32 max(u32 a, u32 b)
+{
+    u32 result = (a >= b) ? a : b;
+    return result;
+}
+
 #define ERROR(...)                \
     fprintf(stderr, __VA_ARGS__); \
     exit(1);
@@ -152,7 +185,7 @@ struct ReadFileResult
         Partial
     };
     Outcome outcome;
-    u8 *data;
+    u8 *buffer;
     u64 length;
 };
 
@@ -220,7 +253,7 @@ struct ParseTwiddlerConfigV5Result
 };
 
 ParseTwiddlerConfigV5Result
-parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
+parseTwiddlerConfigV5(Arena *arena, u8 *buffer, u64 length)
 {
     void *memory = arena->next;
     ParseTwiddlerConfigV5Result result = {};
@@ -230,7 +263,7 @@ parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
     }
     else
     {
-        Header *rawHeader = (Header *)sourceBytes;
+        Header *rawHeader = (Header *)buffer;
         TwiddlerConfig &config = result.config;
         config.header = (Header *)requestBytes(arena, sizeof(Header));
         config.chords = (Chord *)requestBytes(arena, sizeof(Chord) * MAX_CHORD_COUNT);
@@ -250,11 +283,11 @@ parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
             }
             else
             {
-                u32 stringCount = ((config.header->mouse_left_action == 0xff) +
-                                   (config.header->mouse_middle_action == 0xff) +
-                                   (config.header->mouse_right_action == 0xff));
+                config.stringCount = ((config.header->mouse_left_action == 0xff) +
+                                      (config.header->mouse_middle_action == 0xff) +
+                                      (config.header->mouse_right_action == 0xff));
 
-                ChordTableEntry *chordTable = (ChordTableEntry *)(sourceBytes + sizeof(Header));
+                ChordTableEntry *chordTable = (ChordTableEntry *)(buffer + sizeof(Header));
                 for (u32 chordIndex = 0;
                      chordIndex < config.header->chord_count;
                      ++chordIndex)
@@ -262,63 +295,62 @@ parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
                     ChordTableEntry *chord = chordTable + chordIndex;
                     if (chord->hid.modifiers == 0xff)
                     {
-                        stringCount += 1;
+                        config.stringCount += 1;
                     }
                 }
 
-                if (stringCount > MAX_STRING_COUNT)
+                if (config.stringCount > MAX_STRING_COUNT)
                 {
                     result = {ParseTwiddlerConfigV5Result::TooManyStrings};
                 }
                 else
                 {
-                    u32 *stringLocationTable = (u32 *)(chordTable + config.header->chord_count);
+                    u32 *locationTable = (u32 *)(chordTable + config.header->chord_count);
 
                     for (u32 stringIndex = 0;
-                         stringIndex < stringCount;
+                         stringIndex < config.stringCount;
                          ++stringIndex)
                     {
-                        StringTableEntry *stringEntry = (StringTableEntry *)(sourceBytes + stringLocationTable[stringIndex]);
-                        if ((u8 *)stringEntry + stringEntry->length > sourceBytes + length)
+                        StringTableEntry *stringEntry = (StringTableEntry *)(buffer + locationTable[stringIndex]);
+                        if ((u8 *)stringEntry + stringEntry->size > buffer + length)
                         {
                             result = {ParseTwiddlerConfigV5Result::DeclaredStringLengthOverrunsBuffer};
                             break;
                         }
-                        else if (stringEntry->length > MAX_STRING_LENGTH)
+                        else if (stringEntry->size > sizeof(StringTableEntry) + sizeof(HidPair) * MAX_STRING_LENGTH)
                         {
                             result = {ParseTwiddlerConfigV5Result::StringTooLong};
                             break;
                         }
-                        else
+                    }
+                    if (result.outcome == ParseTwiddlerConfigV5Result::Uninitialized)
+                    {
+                        for (u32 chordIndex = 0;
+                             chordIndex < config.header->chord_count;
+                             ++chordIndex)
                         {
-                            for (u32 chordIndex = 0;
-                                 chordIndex < config.header->chord_count;
-                                 ++chordIndex)
+                            ChordTableEntry *chordTableEntry = chordTable + chordIndex;
+                            Chord *chord = config.chords + chordIndex;
+                            chord->buttons = chordTableEntry->buttons;
+                            if (chordTableEntry->hid.modifiers == 0xff)
                             {
-                                ChordTableEntry *chordTableEntry = chordTable + chordIndex;
-                                Chord *chord = config.chords + chordIndex;
-                                chord->buttons = chordTableEntry->buttons;
-                                if (chordTableEntry->hid.modifiers == 0xff)
+                                u32 offset = locationTable[chordTableEntry->hid.code];
+                                StringTableEntry *stringEntry = (StringTableEntry *)(buffer + offset);
+                                chord->codeCount = (stringEntry->size - sizeof(StringTableEntry)) / sizeof(HidPair);
+                                for (u32 codeIndex = 0;
+                                     codeIndex < chord->codeCount;
+                                     ++codeIndex)
                                 {
-                                    u32 offset = stringLocationTable[chordTableEntry->hid.code];
-                                    StringTableEntry *stringEntry = (StringTableEntry *)(sourceBytes + offset);
-                                    chord->codeCount = (stringEntry->length - sizeof(StringTableEntry)) / sizeof(HidPair);
-                                    for (u32 codeIndex = 0;
-                                         codeIndex < chord->codeCount;
-                                         ++codeIndex)
-                                    {
-                                        *(chord->codes + codeIndex) = *(stringEntry->elements + codeIndex);
-                                    }
+                                    *(chord->codes + codeIndex) = *(stringEntry->elements + codeIndex);
                                 }
-                                else
-                                {
-                                    chord->codeCount = 1;
-                                    *(chord->codes) = chordTableEntry->hid;
-                                }
-
-                                result.outcome = ParseTwiddlerConfigV5Result::Success;
+                            }
+                            else
+                            {
+                                chord->codeCount = 1;
+                                *(chord->codes) = chordTableEntry->hid;
                             }
                         }
+                        result.outcome = ParseTwiddlerConfigV5Result::Success;
                     }
                 }
             }
@@ -331,7 +363,6 @@ parseTwiddlerConfigV5(Arena *arena, u8 *sourceBytes, u64 length)
     return result;
 }
 
-#if 0
 struct UnparseTwiddlerConfigV5Result
 {
     enum Outcome
@@ -341,14 +372,87 @@ struct UnparseTwiddlerConfigV5Result
         Success,
     };
     Outcome outcome;
-    u8 *bytes;
+    u8 *buffer;
     u64 length;
 };
 
-UnparseTwiddlerConfigV5Result unparseTwiddlerConfigV5Result(Arena *arena, TwiddlerConfig *config)
+UnparseTwiddlerConfigV5Result unparseTwiddlerConfigV5(Arena *arena, TwiddlerConfig *config)
 {
+    UnparseTwiddlerConfigV5Result result = {};
+
+    void *memory = arena->next;
+    u32 chordCount = config->header->chord_count;
+
+    u32 stringTableSize = 0;
+    for (u32 chordIndex = 0;
+         chordIndex < chordCount;
+         ++chordIndex)
+    {
+        u32 codeCount = config->chords[chordIndex].codeCount;
+        if (codeCount > 1)
+        {
+            stringTableSize += sizeof(StringTableEntry) + sizeof(HidPair) * codeCount;
+        }
+    }
+    u32 size = (sizeof(Header) +
+                sizeof(ChordTableEntry) * chordCount +
+                sizeof(u32) * config->stringCount +
+                stringTableSize);
+
+    u8 *buffer = (u8 *)requestBytes(arena, size);
+    if (!buffer)
+    {
+        result = {UnparseTwiddlerConfigV5Result::ArenaFull};
+    }
+    else
+    {
+        Header *header = (Header *)buffer;
+        *header = *config->header;
+        writeLEu16((u8 *)&header->chord_count, config->header->chord_count);
+        writeLEu16((u8 *)&header->sleep_timeout, config->header->sleep_timeout);
+        result = {UnparseTwiddlerConfigV5Result::Success};
+
+        ChordTableEntry *chordTable = (ChordTableEntry *)(buffer + sizeof(Header));
+        u32 *locationTable = (u32 *)((u8 *)(chordTable + header->chord_count));
+        StringTableEntry *stringTableEntry = (StringTableEntry *)(locationTable + sizeof(u32) * config->stringCount);
+        u32 stringIndex = 0;
+        for (u32 chordIndex = 0;
+             chordIndex < header->chord_count;
+             ++chordIndex)
+        {
+            Chord chord = config->chords[chordIndex];
+            chordTable[chordIndex].buttons = chord.buttons;
+            if (chord.codeCount == 1)
+            {
+                chordTable[chordIndex].hid = chord.codes[0];
+            }
+            else
+            {
+                chordTable[chordIndex].hid.modifiers = 0xff;
+                chordTable[chordIndex].hid.code = stringIndex;
+                stringTableEntry->size = sizeof(u16) + sizeof(HidPair) * chord.codeCount;
+                for (u32 elementIndex = 0;
+                     elementIndex < chord.codeCount;
+                     ++elementIndex)
+                {
+                    stringTableEntry->elements[elementIndex] = chord.codes[elementIndex];
+                }
+                locationTable[stringIndex] = (u8 *)stringTableEntry - buffer;
+                stringTableEntry = (StringTableEntry *)((u8 *)stringTableEntry + stringTableEntry->size);
+
+                ++stringIndex;
+            }
+        }
+        result.length = size;
+        result.buffer = buffer;
+    }
+
+    if (result.outcome != UnparseTwiddlerConfigV5Result::Success)
+    {
+        arena->next = memory;
+    }
+    return result;
 }
-#endif
 
 int main(int argc, char **argv)
 {
@@ -356,14 +460,14 @@ int main(int argc, char **argv)
     initArena(&arena, MegaBytes(1), MAIN_ARENA_BASE);
     char *fileName = argv[1];
 
-    ReadFileResult confFile = readFile(&arena, fileName);
-    if (confFile.outcome != ReadFileResult::Success)
+    ReadFileResult configIn = readFile(&arena, fileName);
+    if (configIn.outcome != ReadFileResult::Success)
     {
         ERROR("Could not read file \"%s\"\n", fileName)
     }
     else
     {
-        ParseTwiddlerConfigV5Result parseResult = parseTwiddlerConfigV5(&arena, confFile.data, confFile.length);
+        ParseTwiddlerConfigV5Result parseResult = parseTwiddlerConfigV5(&arena, configIn.buffer, configIn.length);
         if (parseResult.outcome != ParseTwiddlerConfigV5Result::Success)
         {
             ERROR("Could not parse file \"%s\"\n", fileName)
@@ -384,7 +488,22 @@ int main(int argc, char **argv)
                     printf("  (%d)  code=0x%02x, mod=0x%02x\n", codeIndex, code->code, code->modifiers);
                 }
             }
-            // UnparseTwiddlerConfigV5Result configOut = unparseTwiddlerConfigV5(&arena, parseResult.config);
+            UnparseTwiddlerConfigV5Result configOut = unparseTwiddlerConfigV5(&arena, &parseResult.config);
+
+            printf("original size: %lu\n", configIn.length);
+            printf("new size:      %lu\n", configOut.length);
+
+            for (u32 i = 0;
+                 i < min(configIn.length, configOut.length);
+                 ++i)
+            {
+                if (configIn.buffer[i] != (configOut.buffer[i]))
+                {
+                    printf("difference in char %d\n", i);
+                    assert(!"eeeeh");
+                    break;
+                }
+            }
         }
     }
 }
