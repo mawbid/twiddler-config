@@ -341,13 +341,13 @@ parseTwiddlerConfigV5(Arena *arena, u8 *buffer, u64 length)
                                      codeIndex < chord->codeCount;
                                      ++codeIndex)
                                 {
-                                    *(chord->codes + codeIndex) = *(stringEntry->elements + codeIndex);
+                                    chord->codes[codeIndex] = stringEntry->elements[codeIndex];
                                 }
                             }
                             else
                             {
                                 chord->codeCount = 1;
-                                *(chord->codes) = chordTableEntry->hid;
+                                chord->codes[0] = chordTableEntry->hid;
                             }
                         }
                         result.outcome = ParseTwiddlerConfigV5Result::Success;
@@ -414,7 +414,7 @@ UnparseTwiddlerConfigV5Result unparseTwiddlerConfigV5(Arena *arena, TwiddlerConf
 
         ChordTableEntry *chordTable = (ChordTableEntry *)(buffer + sizeof(Header));
         u32 *locationTable = (u32 *)((u8 *)(chordTable + header->chord_count));
-        StringTableEntry *stringTableEntry = (StringTableEntry *)(locationTable + sizeof(u32) * config->stringCount);
+        StringTableEntry *stringTableEntry = (StringTableEntry *)((u8 *)(locationTable + config->stringCount));
         u32 stringIndex = 0;
         for (u32 chordIndex = 0;
              chordIndex < header->chord_count;
